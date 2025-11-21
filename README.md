@@ -54,6 +54,8 @@ The app uses these Databricks resources (configured via DAB):
 | `ai-query-endpoint` | Serving Endpoint | Execute `ai_query` for LLM stages | No (set `serving_endpoint_name` variable) |
 | `database` | Lakebase | PostgreSQL for status/results | No (set `database_instance_name` and `database_name` variables) |
 
+**Note:** Variables can be set in `databricks.yml` under `variables:` section, or passed via command line with `--var="variable_name=value"`.
+
 ## Deployment
 
 ### Prerequisites
