@@ -381,3 +381,39 @@ class ProcessingStatusTable:
         except Exception as e:
             logger.error(f"Error marking file as failed: {str(e)}", exc_info=True)
             raise
+
+    def delete_file_record(self, file_id: str) -> bool:
+        """
+        Delete a file record from the status table
+
+        Args:
+            file_id: File identifier
+
+        Returns:
+            True if deleted, False if not found
+        """
+        try:
+            delete_sql = f"""
+                DELETE FROM {self.table_name}
+                WHERE file_id = %s
+            """
+
+            conn = self.conn_manager.get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(delete_sql, (file_id,))
+                    deleted = cur.rowcount > 0
+                conn.commit()
+            finally:
+                conn.close()
+
+            if deleted:
+                logger.info(f"Deleted file record: {file_id}")
+            else:
+                logger.warning(f"File record not found for deletion: {file_id}")
+
+            return deleted
+
+        except Exception as e:
+            logger.error(f"Error deleting file record: {str(e)}", exc_info=True)
+            raise

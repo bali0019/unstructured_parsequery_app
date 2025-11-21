@@ -136,8 +136,8 @@ unstructured_parsequery_app/
 │   └── deidentify.py        # Stage 5: ai_query for PII detection
 ├── storage/
 │   ├── lakebase_connection.py  # PostgreSQL connection manager
-│   ├── delta_table.py          # Status table operations
-│   └── results_table.py        # Results table operations
+│   ├── status_table.py         # Status table operations (Lakebase)
+│   └── results_table.py        # Results table operations (Lakebase)
 └── utils/
     ├── oauth.py             # OAuth token management
     └── uc_logger.py         # UC Volume logging handler
@@ -159,6 +159,7 @@ Set in `app.yaml`:
 | `MLFLOW_EXPERIMENT_NAME` | MLflow experiment | `/Shared/unstructured_parsequery_pipeline` |
 | `STATUS_TABLE_NAME` | Lakebase status table | `unstructured_parsequery.file_processing_status` |
 | `RESULTS_TABLE_NAME` | Lakebase results table | `unstructured_parsequery.results` |
+| `TABLE_ROW_LIMIT` | Max rows in status table | `20` (default) |
 
 ### AI Prompts
 
@@ -175,7 +176,8 @@ Prompts can be overridden via environment variables.
 ### Streamlit UI
 
 - **File upload**: Multi-file upload with drag-and-drop
-- **Live progress**: Real-time pipeline stage indicators
+- **Parallel processing**: Process multiple files simultaneously (up to 4 concurrent)
+- **Live progress**: Real-time status updates in the processing table
 - **Status table**: View all processed files with hyperlinks to:
   - Source documents in UC Volume
   - MLflow traces
@@ -239,7 +241,7 @@ Valid values: `ingest`, `parse`, `categorize`, `extract`, `deidentify`, or `None
 
 1. **Upload files**: Select one or more documents (PDF, DOCX, TXT, HTML, MD)
 2. **Process**: Click "Process Files Through Pipeline"
-3. **Monitor**: Watch real-time progress through 5 stages
+3. **Monitor**: Watch real-time progress in the status table (files process in parallel, up to 4 at a time)
 4. **View traces**: Click trace ID links to see MLflow traces
 5. **View logs**: Click log links to see pipeline execution logs
 6. **Review results**: Click "View" to see de-identification results

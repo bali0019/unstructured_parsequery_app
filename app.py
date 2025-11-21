@@ -16,7 +16,9 @@ from backend import (
     reset_storage,
     reprocess_file,
     create_initial_file_record,
-    get_file_results
+    get_file_results,
+    reset_stuck_processing_files,
+    delete_file_record
 )
 import json
 from config import LOGS_VOLUME_PATH
@@ -262,6 +264,32 @@ st.markdown("""
         text-decoration: underline;
     }
 
+    /* Filename column - narrower with word wrap */
+    .dataframe td:first-child {
+        max-width: 150px;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        white-space: normal;
+    }
+
+    /* Trace ID column (2nd) - narrower */
+    .dataframe td:nth-child(2) {
+        max-width: 120px;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        white-space: normal;
+    }
+
+    /* Entities column (5th) - narrow for numbers */
+    .dataframe td:nth-child(5) {
+        text-align: center;
+    }
+
+    /* PII Masked column (6th) - narrow for numbers */
+    .dataframe td:nth-child(6) {
+        text-align: center;
+    }
+
     /* Tabs styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
@@ -322,6 +350,37 @@ st.markdown("""
         to { transform: rotate(360deg); }
     }
 
+    /* Full page loading overlay */
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(255, 255, 255, 0.95);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+    }
+
+    .loading-spinner {
+        width: 50px;
+        height: 50px;
+        border: 4px solid rgba(102, 126, 234, 0.2);
+        border-radius: 50%;
+        border-top-color: #667eea;
+        animation: spin 1s ease-in-out infinite;
+        margin-bottom: 1rem;
+    }
+
+    .loading-text {
+        color: #667eea;
+        font-size: 1.1rem;
+        font-weight: 500;
+    }
+
     /* Processing status pulse animation */
     @keyframes processing-pulse {
         0%, 100% {
@@ -377,9 +436,6 @@ if "reprocessing_file_id" not in st.session_state:
 if "viewing_results_file_id" not in st.session_state:
     st.session_state.viewing_results_file_id = None
 
-if "last_processing_result" not in st.session_state:
-    st.session_state.last_processing_result = None
-
 if "show_trace_info" not in st.session_state:
     st.session_state.show_trace_info = False
 
@@ -393,7 +449,21 @@ if "view_results" in query_params:
         st.session_state.viewing_results_filename = filename
         # Clear query params
         st.query_params.clear()
+elif "resume" in query_params:
+    # Resume from failed stage
+    file_id = query_params.get("resume")
+    filename = query_params.get("filename", "")
+    volume_path = query_params.get("volume_path", "")
+    failed_stage = query_params.get("failed_stage", "")
+    if file_id:
+        st.session_state.reprocessing_file_id = file_id
+        st.session_state.reprocessing_filename = filename
+        st.session_state.reprocessing_volume_path = volume_path
+        st.session_state.reprocessing_failed_stage = failed_stage
+        # Clear query params
+        st.query_params.clear()
 elif "reprocess" in query_params:
+    # Reprocess from scratch (parse stage)
     file_id = query_params.get("reprocess")
     filename = query_params.get("filename", "")
     volume_path = query_params.get("volume_path", "")
@@ -401,78 +471,129 @@ elif "reprocess" in query_params:
         st.session_state.reprocessing_file_id = file_id
         st.session_state.reprocessing_filename = filename
         st.session_state.reprocessing_volume_path = volume_path
+        st.session_state.reprocessing_failed_stage = ""  # Empty means start from parse
         # Clear query params
         st.query_params.clear()
+elif "delete" in query_params:
+    # Delete corrupt/stuck record
+    file_id = query_params.get("delete")
+    if file_id:
+        result = delete_file_record(file_id)
+        if result.get("deleted"):
+            st.session_state.delete_success = f"Deleted record: {file_id[:8]}..."
+            # Clear cache so table refreshes without the deleted record
+            st.cache_data.clear()
+        else:
+            st.session_state.delete_error = result.get("error", "Failed to delete")
+        st.query_params.clear()
+
+# Configurable table row limit
+TABLE_ROW_LIMIT = int(os.environ.get("TABLE_ROW_LIMIT", "20"))
 
 # Cache the status query to reduce SQL calls
 @st.cache_data(ttl=30)
 def fetch_processing_status():
     try:
-        return get_processing_status(limit=12)
+        return get_processing_status(limit=TABLE_ROW_LIMIT)
     except Exception as e:
         return {"files": [], "error": str(e)}
 
-# Fetch processing status once and reuse
-status_data = fetch_processing_status()
+# Show loading indicator on first load
+if "initial_load_complete" not in st.session_state:
+    loading_placeholder = st.empty()
+    loading_placeholder.markdown("""
+    <div class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Loading processing status...</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Fetch processing status
+    status_data = fetch_processing_status()
+
+    # Mark initial load as complete and clear loading indicator
+    st.session_state.initial_load_complete = True
+    loading_placeholder.empty()
+else:
+    # Subsequent loads - fetch without loading indicator
+    status_data = fetch_processing_status()
 
 # Header with gradient styling - compact version
 st.markdown("""
 <div style="
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    padding: 1.5rem 2rem;
+    padding: 0.75rem 1.5rem;
     border-radius: 10px;
     margin-bottom: 1rem;
     color: white;
     text-align: center;
 ">
-    <h2 style="color: white !important; margin: 0;">Document Intelligence: Unstructured ParseQuery</h2>
-    <p style="color: rgba(255,255,255,0.8); margin: 0.25rem 0 0 0; font-size: 0.8rem;">Document Processing Pipeline with MLflow Tracing</p>
-    <div style="
-        background: rgba(255,255,255,0.2);
-        border-radius: 8px;
-        padding: 0.75rem 1.5rem;
-        margin-top: 0.75rem;
-        display: inline-block;
-        backdrop-filter: blur(10px);
-    ">
-        <span style="font-size: 0.85rem; font-weight: 600; color: white;">Databricks AI Functions</span><span style="font-size: 0.85rem; color: rgba(255,255,255,0.7);"> · </span><span style="font-size: 0.8rem; color: rgba(255,255,255,0.9);">ai_parse_document</span><span style="font-size: 0.8rem; color: rgba(255,255,255,0.7);"> & </span><span style="font-size: 0.8rem; color: rgba(255,255,255,0.9);">ai_query</span>
-    </div>
+    <h3 style="color: white !important; margin: 0; font-size: 1.2rem;">Document Intelligence: Unstructured ParseQuery</h3>
+    <span style="font-size: 0.75rem; color: rgba(255,255,255,0.8);">Databricks AI Functions</span>
 </div>
 """, unsafe_allow_html=True)
 
+# Helper to show count badge
+def stage_badge(count):
+    if count > 0:
+        return f'<span style="background: #ff9800; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.7rem; margin-left: 0.5rem;">{count} file(s) processing</span>'
+    return ""
+
+# Function to render sidebar with stage counts
+def render_sidebar_stages(data):
+    """Render the pipeline stages in sidebar with current counts"""
+    stage_counts = {"ingest": 0, "parse": 0, "categorize": 0, "extract": 0, "deidentify": 0}
+    total_processing = 0
+    if "files" in data:
+        for file in data["files"]:
+            if file.get("status") == "processing":
+                total_processing += 1
+                current_stage = file.get("current_stage", "").lower()
+                if current_stage in stage_counts:
+                    stage_counts[current_stage] += 1
+
+    # Show processing summary if files are being processed
+    processing_summary = ""
+    if total_processing > 0:
+        processing_summary = f'<span style="background: linear-gradient(135deg, #ff9800 0%, #ff5722 100%); color: white; padding: 0.3rem 0.6rem; border-radius: 6px; font-weight: 600; font-size: 0.75rem;">{total_processing} file(s) processing</span>'
+
+    return f"""<div style="margin-bottom: 1rem;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+<h4 style="color: #495057; margin: 0; font-size: 1.1rem;">Pipeline Stages</h4>
+{processing_summary}
+</div>
+<div style="background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); border-left: 3px solid #28a745; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
+<div style="font-weight: 600; font-size: 0.9rem; color: #155724;">1. Ingest{stage_badge(stage_counts["ingest"])}</div>
+<div style="font-size: 0.8rem; color: #495057;">Upload to UC Volume</div>
+<div style="font-size: 0.75rem; color: #28a745; font-weight: 500;">UC Volumes API</div>
+</div>
+<div style="background: linear-gradient(135deg, #cce5ff 0%, #b8daff 100%); border-left: 3px solid #667eea; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
+<div style="font-weight: 600; font-size: 0.9rem; color: #004085;">2. Parse{stage_badge(stage_counts["parse"])}</div>
+<div style="font-size: 0.8rem; color: #495057;">Text Extraction</div>
+<div style="font-size: 0.75rem; color: #667eea; font-weight: 500;">ai_parse_document</div>
+</div>
+<div style="background: linear-gradient(135deg, #e2d5f1 0%, #d4c5e8 100%); border-left: 3px solid #764ba2; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
+<div style="font-weight: 600; font-size: 0.9rem; color: #4a235a;">3. Categorize{stage_badge(stage_counts["categorize"])}</div>
+<div style="font-size: 0.8rem; color: #495057;">Document Classification</div>
+<div style="font-size: 0.75rem; color: #764ba2; font-weight: 500;">ai_query</div>
+</div>
+<div style="background: linear-gradient(135deg, #e2d5f1 0%, #d4c5e8 100%); border-left: 3px solid #764ba2; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
+<div style="font-weight: 600; font-size: 0.9rem; color: #4a235a;">4. Extract{stage_badge(stage_counts["extract"])}</div>
+<div style="font-size: 0.8rem; color: #495057;">Entity Extraction</div>
+<div style="font-size: 0.75rem; color: #764ba2; font-weight: 500;">ai_query</div>
+</div>
+<div style="background: linear-gradient(135deg, #e2d5f1 0%, #d4c5e8 100%); border-left: 3px solid #764ba2; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
+<div style="font-weight: 600; font-size: 0.9rem; color: #4a235a;">5. De-identify{stage_badge(stage_counts["deidentify"])}</div>
+<div style="font-size: 0.8rem; color: #495057;">PII Masking</div>
+<div style="font-size: 0.75rem; color: #764ba2; font-weight: 500;">ai_query</div>
+</div>
+</div>"""
+
 # Display About and info in sidebar
 with st.sidebar:
-    # About section at top of sidebar - Professional pipeline visualization
-    st.markdown("""
-    <div style="margin-bottom: 1rem;">
-        <h4 style="color: #495057; margin: 0 0 0.75rem 0; font-size: 1.1rem;">Pipeline Stages</h4>
-        <div style="background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); border-left: 3px solid #28a745; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
-            <div style="font-weight: 600; font-size: 0.9rem; color: #155724;">1. Ingest</div>
-            <div style="font-size: 0.8rem; color: #495057;">Upload to UC Volume</div>
-            <div style="font-size: 0.75rem; color: #28a745; font-weight: 500;">UC Volumes API</div>
-        </div>
-        <div style="background: linear-gradient(135deg, #cce5ff 0%, #b8daff 100%); border-left: 3px solid #667eea; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
-            <div style="font-weight: 600; font-size: 0.9rem; color: #004085;">2. Parse</div>
-            <div style="font-size: 0.8rem; color: #495057;">Text Extraction</div>
-            <div style="font-size: 0.75rem; color: #667eea; font-weight: 500;">ai_parse_document</div>
-        </div>
-        <div style="background: linear-gradient(135deg, #e2d5f1 0%, #d4c5e8 100%); border-left: 3px solid #764ba2; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
-            <div style="font-weight: 600; font-size: 0.9rem; color: #4a235a;">3. Categorize</div>
-            <div style="font-size: 0.8rem; color: #495057;">Document Classification</div>
-            <div style="font-size: 0.75rem; color: #764ba2; font-weight: 500;">ai_query</div>
-        </div>
-        <div style="background: linear-gradient(135deg, #e2d5f1 0%, #d4c5e8 100%); border-left: 3px solid #764ba2; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
-            <div style="font-weight: 600; font-size: 0.9rem; color: #4a235a;">4. Extract</div>
-            <div style="font-size: 0.8rem; color: #495057;">Entity Extraction</div>
-            <div style="font-size: 0.75rem; color: #764ba2; font-weight: 500;">ai_query</div>
-        </div>
-        <div style="background: linear-gradient(135deg, #e2d5f1 0%, #d4c5e8 100%); border-left: 3px solid #764ba2; border-radius: 0 6px 6px 0; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;">
-            <div style="font-weight: 600; font-size: 0.9rem; color: #4a235a;">5. De-identify</div>
-            <div style="font-size: 0.8rem; color: #495057;">PII Masking</div>
-            <div style="font-size: 0.75rem; color: #764ba2; font-weight: 500;">ai_query</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Create placeholder for dynamic stage counts
+    sidebar_stages_placeholder = st.empty()
+    sidebar_stages_placeholder.markdown(render_sidebar_stages(status_data), unsafe_allow_html=True)
 
     st.divider()
 
@@ -486,11 +607,29 @@ with st.sidebar:
 
     st.caption(f"Experiment: `{st.session_state.get('experiment_name', 'unstructured_parsequery_pipeline')}`")
 
+    st.divider()
 
-# Main content area - File Upload (left) | Quick Stats (right)
-col1, col2 = st.columns([2, 1])
+    # Reset stuck files button
+    st.markdown("**Maintenance**")
+    if st.button("Reset Stuck Files", key="reset_stuck_btn", help="Mark all 'processing' files as failed so they can be reprocessed"):
+        result = reset_stuck_processing_files()
+        if result.get("reset_count", 0) > 0:
+            st.success(f"Reset {result['reset_count']} stuck file(s)")
+            st.cache_data.clear()
+            st.rerun()
+        elif "error" in result:
+            st.error(f"Error: {result['error']}")
+        else:
+            st.info("No stuck files found")
 
-with col1:
+
+# Initialize session state for storing files during processing
+if "files_to_process" not in st.session_state:
+    st.session_state.files_to_process = []
+
+# Main content area - File Upload (full width)
+# Only show file upload section when not processing
+if not st.session_state.is_processing:
     # File upload section with styled header
     st.markdown("""
     <div style="
@@ -512,6 +651,14 @@ with col1:
         # Clear the message after showing
         st.session_state.just_processed_files = []
 
+    # Show delete success/error messages
+    if "delete_success" in st.session_state and st.session_state.delete_success:
+        st.success(f"✅ {st.session_state.delete_success}")
+        st.session_state.delete_success = None
+    if "delete_error" in st.session_state and st.session_state.delete_error:
+        st.error(f"❌ {st.session_state.delete_error}")
+        st.session_state.delete_error = None
+
     # File uploader with dynamic key to allow clearing
     uploaded_files = st.file_uploader(
         label="Drop files here or click to browse",
@@ -530,121 +677,18 @@ with col1:
                 file_size_mb = file.size / (1024 * 1024)
                 st.text(f"📄 {file.name} ({file_size_mb:.2f} MB)")
 
-with col2:
-    # Quick stats from status data
-    if "files" in status_data:
-        files = status_data["files"]
-        completed = len([f for f in files if f.get("status") == "completed"])
-        failed = len([f for f in files if f.get("status") == "failed"])
-        processing = len([f for f in files if f.get("status") == "processing"])
-
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 10px;
-            padding: 1rem;
-            color: white;
-            text-align: center;
-            margin-bottom: 0.5rem;
-        ">
-            <div style="font-weight: 600; font-size: 1rem; margin-bottom: 0.5rem;">Quick Stats</div>
-            <div style="display: flex; justify-content: space-around;">
-                <div><div style="font-size: 1.5rem; font-weight: bold;">{len(files)}</div><div style="font-size: 0.7rem; opacity: 0.9;">Total</div></div>
-                <div><div style="font-size: 1.5rem; font-weight: bold;">{completed}</div><div style="font-size: 0.7rem; opacity: 0.9;">Pass</div></div>
-                <div><div style="font-size: 1.5rem; font-weight: bold;">{failed}</div><div style="font-size: 0.7rem; opacity: 0.9;">Fail</div></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-# Show last processing result with stage tiles - AFTER the upload/stats columns
-if st.session_state.last_processing_result:
-    last_result = st.session_state.last_processing_result
-    stages_status = last_result.get("stages_status", {})
-    result = last_result.get("result", {})
-    filename = last_result.get("filename", "")
-
-    # Create a container for the processing result that can be dismissed
-    result_container = st.container()
-    with result_container:
-        # Header with dismiss button
-        header_col, dismiss_col = st.columns([5, 1])
-        with header_col:
-            st.markdown(f"**Last processed: {filename}**")
-        with dismiss_col:
-            if st.button("✕ Dismiss", key="dismiss_results"):
-                st.session_state.last_processing_result = None
-                st.rerun()
-
-        # Show stage tiles
-        stage_cols = st.columns(5)
-        for stage_name, col in zip(
-            ["ingest", "parse", "categorize", "extract", "deidentify"],
-            stage_cols
-        ):
-            with col:
-                if stage_name in stages_status:
-                    stage_result = stages_status[stage_name]
-                    if stage_result.get("status") == "success":
-                        st.markdown(f"""
-                        <div class="stage-card stage-success">
-                            <div style="font-size: 1.5rem;">✅</div>
-                            <div style="font-weight: 600;">{stage_name.title()}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"""
-                        <div class="stage-card stage-error">
-                            <div style="font-size: 1.5rem;">❌</div>
-                            <div style="font-weight: 600;">{stage_name.title()}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.markdown(f"""
-                    <div class="stage-card stage-pending">
-                        <div style="font-size: 1.5rem;">⏸️</div>
-                        <div style="font-weight: 600;">{stage_name.title()}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-        # Show metrics - use same 5-column layout for alignment with tiles
-        if result.get("status") == "completed":
-            st.write("")  # Small spacer
-            m1, m2, m3, m4, m5 = st.columns(5)
-            with m1:
-                st.metric("Duration", f"{result.get('total_time_seconds', 0):.2f}s")
-            with m2:
-                if "categorize" in stages_status:
-                    category = stages_status["categorize"].get("categorization", {}).get("primary_category", "N/A")
-                    st.metric("Category", category)
-            with m3:
-                if "extract" in stages_status:
-                    st.metric("Entities", stages_status["extract"].get("entities_extracted", 0))
-            with m4:
-                if "deidentify" in stages_status:
-                    st.metric("PII Masked", stages_status["deidentify"].get("pii_items_masked", 0))
-            # m5 is empty for alignment
-
-        st.markdown("---")
-
-# Process files button
-if uploaded_files:
-    # Show "Processing..." indicator or button based on state
-    if st.session_state.is_processing:
-        st.markdown("""
-        <div style="
-            background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
-            border-radius: 8px;
-            padding: 0.75rem 2rem;
-            text-align: center;
-            color: white;
-            font-weight: 600;
-        ">
-            <span class="spinner" style="width: 20px; height: 20px; border-width: 2px;"></span>
-            Processing... Please wait
-        </div>
-        """, unsafe_allow_html=True)
-    else:
+    # Process files button
+    if uploaded_files:
         if st.button("🚀 Process Files Through Pipeline", type="primary", use_container_width=True):
+            # Store file data in session state before rerun
+            st.session_state.files_to_process = []
+            for f in uploaded_files:
+                file_data = f.read()
+                st.session_state.files_to_process.append({
+                    "name": f.name,
+                    "data": file_data,
+                    "size": len(file_data)
+                })
             st.session_state.is_processing = True
             st.rerun()
 
@@ -663,7 +707,9 @@ def render_status_table(placeholder):
     """Render the status table into the given placeholder"""
     # Fetch fresh data (bypass cache during processing or reprocessing)
     if st.session_state.is_processing or st.session_state.reprocessing_file_id:
-        fresh_status = get_processing_status(limit=12)
+        fresh_status = get_processing_status(limit=TABLE_ROW_LIMIT)
+        # Also update sidebar stage counts
+        sidebar_stages_placeholder.markdown(render_sidebar_stages(fresh_status), unsafe_allow_html=True)
     else:
         fresh_status = status_data
 
@@ -693,12 +739,12 @@ def render_status_table(placeholder):
                     except Exception:
                         pass
 
-                # Build trace URL
-                trace_id = file.get('trace_id', '')
+                # Build trace URL(s) - trace_id can be comma-separated for resumed files
+                trace_id_field = file.get('trace_id', '') or ''
                 experiment_id = file.get('experiment_id', '')
-                trace_url = None
-                if trace_id and experiment_id:
-                    trace_url = f"{databricks_host}/ml/experiments/{experiment_id}/traces?o={workspace_id}&selectedEvaluationId={trace_id}"
+
+                # Parse comma-separated trace IDs
+                trace_ids = [tid.strip() for tid in trace_id_field.split(',') if tid.strip()] if trace_id_field else []
 
                 # Build log file URL
                 log_file_path = file.get('log_file_path', '') or ''
@@ -735,10 +781,24 @@ def render_status_table(placeholder):
                 filename = file.get("filename", "")
                 filename_display = f'<a href="{file_url}" target="_blank">{filename}</a>' if file_url else filename
 
-                if trace_id:
-                    trace_id_display = trace_id[:20] + "..." if len(trace_id) > 20 else trace_id
-                    if trace_url:
-                        trace_id_display = f'<a href="{trace_url}" target="_blank">{trace_id_display}</a>'
+                if trace_ids:
+                    # Build display for each trace ID (most recent first)
+                    # Show full ID, CSS will handle wrapping
+                    trace_displays = []
+                    for i, tid in enumerate(reversed(trace_ids)):
+                        if experiment_id:
+                            trace_url = f"{databricks_host}/ml/experiments/{experiment_id}/traces?o={workspace_id}&selectedEvaluationId={tid}"
+                            trace_displays.append(f'<a href="{trace_url}" target="_blank">{tid}</a>')
+                        else:
+                            trace_displays.append(tid)
+
+                    if len(trace_displays) == 1:
+                        trace_id_display = trace_displays[0]
+                    else:
+                        # Show most recent trace prominently with "Latest" label, older ones with "Previous" label
+                        trace_id_display = f'<span style="font-size:0.7em;color:#28a745;font-weight:600;">Latest:</span> {trace_displays[0]}'
+                        older_traces = '<br>'.join([f'<span style="font-size:0.7em;color:#999;">Prev:</span> {t}' for t in trace_displays[1:]])
+                        trace_id_display = f'{trace_id_display}<br>{older_traces}'
                 else:
                     trace_id_display = "N/A"
 
@@ -766,7 +826,20 @@ def render_status_table(placeholder):
                 if status == "completed":
                     actions_display = f'<a href="?view_results={file_id}&filename={encoded_filename}" target="_self">View</a>'
                 elif status == "failed":
-                    actions_display = f'<a href="?reprocess={file_id}&filename={encoded_filename}&volume_path={encoded_volume_path}" target="_self">Reprocess</a>'
+                    # Check if file exists in volume (has volume_path)
+                    if volume_path:
+                        encoded_current_stage = urllib.parse.quote(current_stage) if current_stage else ""
+                        # Resume link - passes failed_stage to resume from that point
+                        resume_link = f'<a href="?resume={file_id}&filename={encoded_filename}&volume_path={encoded_volume_path}&failed_stage={encoded_current_stage}" target="_self">Resume</a>'
+                        # Reprocess link - no failed_stage means start from scratch (parse)
+                        reprocess_link = f'<a href="?reprocess={file_id}&filename={encoded_filename}&volume_path={encoded_volume_path}" target="_self">Reprocess</a>'
+                        # Delete link for cleanup
+                        delete_link = f'<a href="?delete={file_id}" target="_self" style="color:#dc3545;">Delete</a>'
+                        actions_display = f'{resume_link} | {reprocess_link} | {delete_link}'
+                    else:
+                        # No volume_path means file failed at ingest - can only delete
+                        delete_link = f'<a href="?delete={file_id}" target="_self" style="color:#dc3545;">Delete</a>'
+                        actions_display = delete_link
                 else:
                     actions_display = "-"
 
@@ -1042,155 +1115,138 @@ if st.session_state.viewing_results_file_id:
     st.session_state.viewing_results_filename = None
 
 # Processing Pipeline section - runs AFTER status table renders, but displays ABOVE it
-if uploaded_files and st.session_state.is_processing:
+if st.session_state.is_processing and st.session_state.files_to_process:
+    import concurrent.futures
+    import threading
+
     with processing_container:
-        st.divider()
-        st.write("### 📊 Processing Pipeline")
+        files_to_process = st.session_state.files_to_process
+        total_files = len(files_to_process)
 
-        # Progress tracking
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        total_files = len(uploaded_files)
-        processed_filenames = []
-
-        for idx, uploaded_file in enumerate(uploaded_files):
-            # Show prominent processing indicator
-            processing_placeholder = st.empty()
-            processing_placeholder.markdown(f"""
-            <div class="processing-indicator">
-                <h3><span class="spinner"></span> Processing File {idx + 1} of {total_files}</h3>
-                <p><strong>{uploaded_file.name}</strong></p>
-                <p style="font-size: 0.9rem; margin-top: 0.5rem;">Running through 5-stage pipeline with MLflow tracing...</p>
+        # Header showing parallel processing with spinner
+        st.markdown(f"""
+        <div style="
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 8px;
+            padding: 0.75rem 1.25rem;
+            margin-bottom: 0.75rem;
+            border: 1px solid #dee2e6;
+        ">
+            <span style="font-weight: 600; color: #495057; font-size: 1.1rem;">Processing {total_files} file(s) in parallel</span>
+            <span style="color: #6c757d; font-size: 0.9rem;"> - Watch status table for progress</span>
+            <div style="
+                margin-top: 0.75rem;
+                height: 4px;
+                background: #e9ecef;
+                border-radius: 2px;
+                overflow: hidden;
+            ">
+                <div style="
+                    height: 100%;
+                    width: 30%;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    border-radius: 2px;
+                    animation: progress-slide 1.5s ease-in-out infinite;
+                "></div>
             </div>
-            """, unsafe_allow_html=True)
+        </div>
+        <style>
+            @keyframes progress-slide {{
+                0% {{ margin-left: 0%; }}
+                50% {{ margin-left: 70%; }}
+                100% {{ margin-left: 0%; }}
+            }}
+        </style>
+        """, unsafe_allow_html=True)
 
-            # Create a container for this file's processing
-            with st.container():
-                st.markdown(f"#### 📄 {uploaded_file.name}")
+        # Create initial records for all files first
+        file_ids = []
+        for file_info in files_to_process:
+            file_id = create_initial_file_record(file_info["name"])
+            file_ids.append(file_id)
 
-                # Read file data to get size, but don't pass bytes to avoid trace bloat
-                file_data = uploaded_file.read()
-                file_size = len(file_data)
+        # Refresh table to show all files as "Processing (ingest)"
+        render_status_table(status_table_placeholder)
 
-                # Create initial record before processing so file appears in table immediately
-                file_id = create_initial_file_record(uploaded_file.name)
+        # Thread-safe results storage
+        results_lock = threading.Lock()
+        processing_results = []
 
-                # Refresh status table to show the new file with "Processing (ingest)" status
+        def process_single_file(file_info, file_id):
+            """Process a single file - runs in thread"""
+            try:
+                result = process_file_through_pipeline(
+                    file_bytes=file_info["data"],
+                    filename=file_info["name"],
+                    file_id=file_id,
+                    on_stage_update=None,  # Table refresh handled by main thread
+                    on_stage_status=None   # No tile updates in parallel mode
+                )
+                with results_lock:
+                    processing_results.append({
+                        "filename": file_info["name"],
+                        "result": result
+                    })
+                return result
+            except Exception as e:
+                with results_lock:
+                    processing_results.append({
+                        "filename": file_info["name"],
+                        "result": {"status": "failed", "error": str(e)}
+                    })
+                return {"status": "failed", "error": str(e)}
+
+        # Process files in parallel with ThreadPoolExecutor
+        max_workers = min(4, total_files)  # Limit concurrent processing
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all files for processing
+            futures = {
+                executor.submit(process_single_file, file_info, file_id): file_info["name"]
+                for file_info, file_id in zip(files_to_process, file_ids)
+            }
+
+            # Poll for completion and refresh table
+            completed = 0
+            progress_placeholder = st.empty()
+
+            import time
+            while completed < total_files:
+                # Check how many are done
+                done_count = sum(1 for f in futures if f.done())
+                if done_count > completed:
+                    completed = done_count
+                    progress_placeholder.markdown(f"**Completed: {completed}/{total_files} files**")
+
+                # Always refresh table to show stage transitions
                 render_status_table(status_table_placeholder)
 
-                # Create columns for stage indicators
-                stage_cols = st.columns(5)
+                # Small delay to avoid tight loop
+                time.sleep(0.5)
 
-                # Process through pipeline with MLflow tracing
-                try:
-                    # Define callback to refresh status table after each stage
-                    def refresh_table():
-                        render_status_table(status_table_placeholder)
-
-                    # Process file (this creates the parent trace with child spans)
-                    result = process_file_through_pipeline(
-                        file_bytes=file_data,
-                        filename=uploaded_file.name,
-                        file_id=file_id,
-                        on_stage_update=refresh_table
-                    )
-
-                    # Clear processing indicator
-                    processing_placeholder.empty()
-
-                    # Update UI with stage results
-                    stages_status = result.get("stages", {})
-
-                    for stage_name, col in zip(
-                        ["ingest", "parse", "categorize", "extract", "deidentify"],
-                        stage_cols
-                    ):
-                        with col:
-                            if stage_name in stages_status:
-                                stage_result = stages_status[stage_name]
-                                if stage_result.get("status") == "success":
-                                    st.markdown(f"""
-                                    <div class="stage-card stage-success">
-                                        <div style="font-size: 1.5rem;">✅</div>
-                                        <div style="font-weight: 600;">{stage_name.title()}</div>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                else:
-                                    st.markdown(f"""
-                                    <div class="stage-card stage-error">
-                                        <div style="font-size: 1.5rem;">❌</div>
-                                        <div style="font-weight: 600;">{stage_name.title()}</div>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                            else:
-                                st.markdown(f"""
-                                <div class="stage-card stage-pending">
-                                    <div style="font-size: 1.5rem;">⏸️</div>
-                                    <div style="font-weight: 600;">{stage_name.title()}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-
-                    # Display results
-                    if result.get("status") == "completed":
-                        st.success(f"✅ Pipeline completed for {uploaded_file.name}")
-                        processed_filenames.append(uploaded_file.name)
-
-                        # Show key metrics - use 5 columns for alignment with tiles
-                        m1, m2, m3, m4, m5 = st.columns(5)
-                        with m1:
-                            st.metric("Duration", f"{result['total_time_seconds']:.2f}s")
-                        with m2:
-                            if "categorize" in stages_status:
-                                category = stages_status["categorize"].get("categorization", {}).get("primary_category", "N/A")
-                                st.metric("Category", category)
-                        with m3:
-                            if "extract" in stages_status:
-                                st.metric("Entities", stages_status["extract"].get("entities_extracted", 0))
-                        with m4:
-                            if "deidentify" in stages_status:
-                                st.metric("PII Masked", stages_status["deidentify"].get("pii_items_masked", 0))
-                        # m5 is empty for alignment
-
-                        # Add to processed files
-                        st.session_state.processed_files.append({
-                            "filename": uploaded_file.name,
-                            "pipeline_id": result["pipeline_id"],
-                            "status": "completed",
-                            "timestamp": result["end_time"],
-                            "duration": result["total_time_seconds"]
-                        })
-
-                    else:
-                        st.error(f"❌ Pipeline failed for {uploaded_file.name}")
-                        st.error(f"Error: {result.get('error', 'Unknown error')}")
-
-                except Exception as e:
-                    processing_placeholder.empty()
-                    st.error(f"❌ Failed to process {uploaded_file.name}")
-                    st.error(f"Error: {str(e)}")
-
-                st.divider()
-
-            # Update progress
-            progress_bar.progress((idx + 1) / total_files)
-
-            # Refresh status table to show updated processing status
+            # Final refresh
             render_status_table(status_table_placeholder)
+            progress_placeholder.markdown(f"**✅ All {total_files} files processed**")
 
-        status_text.text(f"✨ Processing complete: {len(uploaded_files)} files processed")
-
-    # Store the last result for display after rerun
-    if 'result' in dir() and result:
-        st.session_state.last_processing_result = {
-            "filename": uploaded_file.name if 'uploaded_file' in dir() else "",
-            "result": result,
-            "stages_status": stages_status if 'stages_status' in dir() else {}
-        }
+        # Collect results
+        processed_filenames = []
+        for item in processing_results:
+            result = item["result"]
+            filename = item["filename"]
+            if result.get("status") == "completed":
+                processed_filenames.append(filename)
+                st.session_state.processed_files.append({
+                    "filename": filename,
+                    "pipeline_id": result.get("pipeline_id", ""),
+                    "status": "completed",
+                    "timestamp": result.get("end_time", ""),
+                    "duration": result.get("total_time_seconds", 0)
+                })
 
     # Reset processing state and clear uploader
     st.session_state.is_processing = False
     st.session_state.just_processed_files = processed_filenames
+    st.session_state.files_to_process = []  # Clear stored files
     st.session_state.uploader_key += 1
     # Clear cache so new files show up in status table
     st.cache_data.clear()
@@ -1202,17 +1258,19 @@ if st.session_state.reprocessing_file_id:
         file_id = st.session_state.reprocessing_file_id
         volume_path = st.session_state.get("reprocessing_volume_path", "")
         filename = st.session_state.get("reprocessing_filename", "")
+        failed_stage = st.session_state.get("reprocessing_failed_stage", "")
 
         st.divider()
         st.write("### Reprocessing Pipeline")
 
-        # Show processing indicator
+        # Show processing indicator with resume info
+        resume_info = f"Resuming from {failed_stage}" if failed_stage else "Running stages 2-5"
         processing_placeholder = st.empty()
         processing_placeholder.markdown(f"""
         <div class="processing-indicator">
             <h3><span class="spinner"></span> Reprocessing File</h3>
             <p><strong>{filename}</strong></p>
-            <p style="font-size: 0.9rem; margin-top: 0.5rem;">Running stages 2-5 with new trace...</p>
+            <p style="font-size: 0.9rem; margin-top: 0.5rem;">{resume_info} with new trace...</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1225,6 +1283,7 @@ if st.session_state.reprocessing_file_id:
                 file_id=file_id,
                 volume_path=volume_path,
                 filename=filename,
+                failed_stage=failed_stage,
                 on_stage_update=refresh_table_reprocess
             )
 
@@ -1244,6 +1303,7 @@ if st.session_state.reprocessing_file_id:
     st.session_state.reprocessing_file_id = None
     st.session_state.reprocessing_volume_path = None
     st.session_state.reprocessing_filename = None
+    st.session_state.reprocessing_failed_stage = None
     st.cache_data.clear()
     st.rerun()
 
@@ -1264,39 +1324,3 @@ if st.session_state.processed_files:
             with cols[3]:
                 st.metric("Timestamp", file_info['timestamp'][:19])
 
-# Footer
-st.divider()
-st.markdown(f"""
-<div style="
-    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-    border-radius: 10px;
-    padding: 1.5rem;
-    margin-top: 1rem;
-">
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
-        <div>
-            <h5 style="color: #667eea; margin-top: 0;">🔍 MLflow Tracing</h5>
-            <ul style="color: #495057; font-size: 0.85rem; margin: 0; padding-left: 1.2rem;">
-                <li>URI: <code>{st.session_state.tracking_uri}</code></li>
-                <li>Experiment: <code>{st.session_state.get('experiment_name', 'unstructured_parsequery_pipeline')}</code></li>
-                <li>1 parent trace + 5 child spans per file</li>
-            </ul>
-        </div>
-        <div>
-            <h5 style="color: #764ba2; margin-top: 0;">⚙️ Pipeline Stages</h5>
-            <ul style="color: #495057; font-size: 0.85rem; margin: 0; padding-left: 1.2rem;">
-                <li><strong>Ingest</strong> - UC Volume Upload</li>
-                <li><strong>Parse</strong> - ai_parse_document</li>
-                <li><strong>Categorize/Extract/De-identify</strong> - AI Query</li>
-            </ul>
-        </div>
-        <div>
-            <h5 style="color: #28a745; margin-top: 0;">📊 Status Tracking</h5>
-            <p style="color: #495057; font-size: 0.85rem; margin: 0;">
-                Status: <code>unstructured_parsequery.file_processing_status</code><br>
-                Results: <code>unstructured_parsequery.results</code>
-            </p>
-        </div>
-    </div>
-</div>
-""", unsafe_allow_html=True)

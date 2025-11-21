@@ -76,11 +76,8 @@ class UCVolumeLogHandler(logging.Handler):
         """
         try:
             # Format the log entry as plain text
+            # self.format() already includes exception info via the formatter
             log_line = self.format(record)
-
-            # Add exception info if present
-            if record.exc_info:
-                log_line += '\n' + self.formatException(record.exc_info)
 
             # Add to buffer
             self.log_buffer.append(log_line)
@@ -164,7 +161,7 @@ class PipelineLogger:
             'stages.categorize',
             'stages.extract',
             'stages.deidentify',
-            'storage.delta_table',
+            'storage.status_table',
             'storage.results_table'
         ]
 
