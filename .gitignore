@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Streamlit
+.streamlit/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+test_env/
+
+# Databricks local metadata
+.databricks/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+test_local_tracing.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local development files (not deployed)
+CLAUDE.md
+claude.md
+IMPLEMENTATION_NOTES.md
+pdfs/
+
+# Generated PDFs
+*.pdf
+
+# Egg info
+*.egg-info/

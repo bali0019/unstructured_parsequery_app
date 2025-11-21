@@ -1,0 +1,29 @@
+command: ["streamlit", "run", "app.py", "--server.port", "8000"]
+
+env:
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+
+  # Reference app resources defined in databricks.yml
+  - name: VOLUME_PATH
+    valueFrom: 'source-volume'
+
+  - name: SQL_WAREHOUSE_ID
+    valueFrom: 'parse-warehouse'
+
+  - name: AI_QUERY_ENDPOINT
+    valueFrom: 'ai-query-endpoint'
+
+  # Static configuration values
+  - name: LOGS_VOLUME_PATH
+    valueFrom: 'logs-volume'
+  - name: MLFLOW_EXPERIMENT_NAME
+    value: "/Shared/unstructured_parsequery_pipeline"
+
+  # Lakebase configuration
+  - name: LAKEBASE_INSTANCE_NAME
+    value: "your-lakebase-instance"
+  - name: STATUS_TABLE_NAME
+    value: "unstructured_parsequery.file_processing_status"
+  - name: RESULTS_TABLE_NAME
+    value: "unstructured_parsequery.results"

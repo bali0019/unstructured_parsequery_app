@@ -1,0 +1,8 @@
+streamlit
+mlflow<3.6.0
+databricks-sdk>=0.56.0
+requests
+openai
+pandas
+psycopg2-binary
+sqlalchemy>=2.0.0
