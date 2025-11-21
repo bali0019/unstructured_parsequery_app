@@ -158,10 +158,15 @@ Set in `app.yaml`:
 | `SQL_WAREHOUSE_ID` | Warehouse for ai_parse_document | App resource |
 | `AI_QUERY_ENDPOINT` | Serving endpoint for ai_query | App resource |
 | `LOGS_VOLUME_PATH` | Pipeline logs volume | App resource |
+
+Additional variables with defaults in `config.py`:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
 | `MLFLOW_EXPERIMENT_NAME` | MLflow experiment | `/Shared/unstructured_parsequery_pipeline` |
 | `STATUS_TABLE_NAME` | Lakebase status table | `unstructured_parsequery.file_processing_status` |
 | `RESULTS_TABLE_NAME` | Lakebase results table | `unstructured_parsequery.results` |
-| `TABLE_ROW_LIMIT` | Max rows in status table | `20` (default) |
+| `TABLE_ROW_LIMIT` | Max rows in status table | `20` |
 
 ### AI Prompts
 
