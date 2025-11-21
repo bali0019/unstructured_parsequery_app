@@ -149,7 +149,7 @@ unstructured_parsequery_app/
 
 ### Environment Variables
 
-Set in `app.yaml`:
+Set in `app.yaml`. These are automatically configured from DAB bundle resources via `valueFrom` bindings - no manual configuration needed:
 
 | Variable | Description | Source |
 |----------|-------------|--------|
