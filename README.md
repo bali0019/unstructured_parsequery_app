@@ -46,13 +46,13 @@ Each span logs:
 
 The app uses these Databricks resources (configured via DAB):
 
-| Resource | Type | Purpose |
-|----------|------|---------|
-| `source-volume` | UC Volume | Document uploads |
-| `parse-warehouse` | SQL Warehouse | Execute `ai_parse_document` |
-| `ai-query-endpoint` | Serving Endpoint | Execute `ai_query` for LLM stages |
-| `logs-volume` | UC Volume | Pipeline execution logs |
-| `database` | Lakebase | PostgreSQL for status/results |
+| Resource | Type | Purpose | Created by DAB? |
+|----------|------|---------|-----------------|
+| `source-volume` | UC Volume | Document uploads | Yes (auto-created) |
+| `logs-volume` | UC Volume | Pipeline execution logs | Yes (auto-created) |
+| `parse-warehouse` | SQL Warehouse | Execute `ai_parse_document` | No (set `sql_warehouse_id` variable) |
+| `ai-query-endpoint` | Serving Endpoint | Execute `ai_query` for LLM stages | No (set `serving_endpoint_name` variable) |
+| `database` | Lakebase | PostgreSQL for status/results | No (set `database_instance_name` and `database_name` variables) |
 
 ## Deployment
 
